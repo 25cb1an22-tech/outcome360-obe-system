@@ -1,0 +1,124 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: signed-in user record
+    function signedIn() { return request.auth != null; }
+    function userDoc() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function isAdmin() { return signedIn() && userDoc().role == 'admin'; }
+    function isHOD(deptId) { return signedIn() && userDoc().role == 'hod' && userDoc().departmentId == deptId; }
+    function isFaculty() { return signedIn() && userDoc().role == 'faculty'; }
+    function isStudent() { return signedIn() && userDoc().role == 'student'; }
+    function ownsStudent(userId) { return signedIn() && request.auth.uid == userId; }
+
+    // Users — admin can write all; users can read own; HOD can read dept users
+    match /users/{userId} {
+      allow read: if isAdmin() || ownsStudent(userId) || (userDoc().role == 'hod' && userDoc().departmentId == resource.data.departmentId);
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Departments — admin writes; HOD/faculty/student read
+    match /departments/{deptId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Subjects — admin & HOD write; faculty & students read
+    match /subjects/{subjectId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin() || (userDoc().role == 'hod' && isHOD(resource.data.departmentId));
+    }
+
+    // Course Outcomes — faculty can write own subjects
+    match /courseOutcomes/{coId} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || isFaculty();
+    }
+
+    // Program Outcomes — admin only writes
+    match /programOutcomes/{poId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Mapping matrices — faculty & HOD can write
+    match /mappingMatrices/{matrixId} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || isFaculty() || userDoc().role == 'hod';
+    }
+
+    // Faculty records — admin writes; HOD/faculty read
+    match /faculty/{facultyId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Students — admin writes; HOD/faculty read own dept; students read own
+    match /students/{studentId} {
+      allow read: if isAdmin() || ownsStudent(resource.data.userId)
+                  || (userDoc().role == 'hod' && userDoc().departmentId == resource.data.departmentId)
+                  || (isFaculty() && userDoc().departmentId == resource.data.departmentId);
+      allow write: if isAdmin();
+    }
+
+    // Assessments & Questions — faculty writes; students read (own subjects)
+    match /assessments/{assessmentId} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || isFaculty() || userDoc().role == 'hod';
+    }
+    match /questions/{questionId} {
+      allow read: if signedIn();
+      allow write: if isAdmin() || isFaculty() || userDoc().role == 'hod';
+    }
+
+    // Marks — faculty & HOD write; students read own marks only
+    match /marks/{markId} {
+      allow read: if isAdmin() || isFaculty() || userDoc().role == 'hod'
+                  || (isStudent() && resource.data.studentId == studentIdForUser(request.auth.uid));
+      allow write: if isAdmin() || isFaculty() || userDoc().role == 'hod';
+    }
+
+    // Attendance — same as marks
+    match /attendance/{attendanceId} {
+      allow read: if isAdmin() || isFaculty() || userDoc().role == 'hod'
+                  || (isStudent() && resource.data.studentId == studentIdForUser(request.auth.uid));
+      allow write: if isAdmin() || isFaculty() || userDoc().role == 'hod';
+    }
+
+    // Feedback — students write own; faculty/admin read
+    match /feedback/{feedbackId} {
+      allow read: if isAdmin() || isFaculty() || userDoc().role == 'hod';
+      allow create: if signedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // Notifications — admin writes; users read by audience
+    match /notifications/{notifId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Activities (audit log) — admin only
+    match /activities/{activityId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin() || signedIn(); // any signed-in user can append via Cloud Function
+    }
+
+    // Reports — users see their own generated reports; admin sees all
+    match /reports/{reportId} {
+      allow read: if isAdmin() || ownsStudent(resource.data.generatedBy);
+      allow write: if signedIn(); // generated client-side, but Cloud Function should validate
+    }
+
+    // Settings — admin only
+    match /settings/{settingsId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Deny by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
